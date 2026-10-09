@@ -38,14 +38,36 @@ function taskDueLabel(task) {
   return task.due.string || isoDatePrefix(task.due.date)
 }
 
-// "#Project  @label1 @label2" line shown under the due date. projectName is
-// looked up by the caller (task only carries project_id) and omitted when
-// unknown; labels come straight off the task, Todoist's API already gives
-// them as name strings rather than ids.
-function taskMetaLabel(task, projectName) {
+// Walks a subtask's parent_id chain as far as tasksById can resolve it,
+// oldest ancestor first (e.g. "Grandparent › Parent"). tasksById only ever
+// holds whatever's currently loaded for the active view, so a chain that
+// steps outside it (parent lives in a different section/filter) stops
+// there and is marked with a leading "…" rather than silently truncating
+// without a sign anything was cut off.
+function parentChainLabel(task, tasksById) {
+  if (!task || !task.parent_id) return ""
+  var names = []
+  var current = task
+  var guard = 0
+  while (current && current.parent_id && guard < 8) {
+    var parent = (tasksById || {})[current.parent_id]
+    if (!parent) { names.unshift("…"); break }
+    names.unshift(parent.content || "")
+    current = parent
+    guard++
+  }
+  return names.join(" › ")
+}
+
+// "#Project  ↳ Parent › Grandparent  @label1 @label2" line shown under the
+// due date. projectName is looked up by the caller (task only carries
+// project_id) and omitted when unknown; labels come straight off the task,
+// Todoist's API already gives them as name strings rather than ids.
+function taskMetaLabel(task, projectName, parentChain) {
   if (!task) return ""
   var parts = []
   if (projectName) parts.push("#" + projectName)
+  if (parentChain) parts.push("↳ " + parentChain)
   var labels = task.labels || []
   for (var i = 0; i < labels.length; i++) parts.push("@" + labels[i])
   return parts.join("  ")
