@@ -27,12 +27,19 @@ Panel {
   readonly property string settingsPath: stateDir + "/settings.json"
 
   property string apiToken: ""
-  property string filterQuery: "today | overdue"
+  // Named Todoist filters shown as extra tabs next to Today/Inbox/All —
+  // [{ name: "Arch", filter: "#Arch" }, ...]. Managed from Settings →
+  // Custom Views.
+  property var customViews: []
+  // Which view (one of "today"/"inbox"/"all", or a customViews name)
+  // quickView resets to whenever settings are (re)loaded, i.e. on every
+  // shell restart — not persisted itself, so switching tabs during a
+  // running session never changes it.
+  property string defaultView: "today"
   property bool showTaskMeta: true
   property bool showHeaderQuips: true
   property var projectsById: ({})
-  // "today" | "inbox" | "all" | "custom" — the three tabs plus whatever the
-  // free-form filter field in Settings last applied.
+  // "today" | "inbox" | "all" | the name of a customViews entry.
   property string quickView: "today"
   property bool settingsLoaded: false
   property bool settingsView: true
@@ -139,21 +146,21 @@ Panel {
 
   readonly property string quickViewLabel: root.quickView === "inbox" ? "INBOX"
     : root.quickView === "all" ? "ALL TASKS"
-    : root.quickView === "custom" ? "CUSTOM FILTER"
-    : "TODAY & OVERDUE"
+    : root.quickView === "today" ? "TODAY & OVERDUE"
+    : root.quickView.toUpperCase()
 
   // Short form for the header stats grid, where a narrow fixed column
   // (down to a 260px panel width, Settings → Advanced) has much less room
   // than the section-header use of quickViewLabel above.
   readonly property string quickViewShortLabel: root.quickView === "inbox" ? "INBOX"
     : root.quickView === "all" ? "ALL"
-    : root.quickView === "custom" ? "CUSTOM"
-    : "TODAY"
+    : root.quickView === "today" ? "TODAY"
+    : root.quickView.toUpperCase()
 
   readonly property string emptyStateMessage: root.quickView === "inbox" ? "Inbox is empty."
     : root.quickView === "all" ? "No tasks yet."
-    : root.quickView === "custom" ? "No tasks match this filter."
-    : "Nothing due. You're clear."
+    : root.quickView === "today" ? "Nothing due. You're clear."
+    : "No tasks match this view."
 
   // ---- Overdue count. Computed across whatever's currently loaded in
   //      root.tasks regardless of view, so the header stats grid's OVERDUE
@@ -255,9 +262,19 @@ Panel {
     var parsed = {}
     try { parsed = JSON.parse(text || "{}") } catch (e) { parsed = {} }
     if (typeof parsed.apiToken === "string") root.apiToken = parsed.apiToken
-    if (typeof parsed.filter === "string") root.filterQuery = Model.sanitizeFilter(parsed.filter)
-    if (typeof parsed.quickView === "string" && ["today", "inbox", "all", "custom"].indexOf(parsed.quickView) !== -1)
-      root.quickView = parsed.quickView
+    if (Array.isArray(parsed.customViews)) {
+      root.customViews = parsed.customViews.filter(function(v) {
+        return v && typeof v.name === "string" && typeof v.filter === "string"
+          && Model.safeTrim(v.name) !== "" && Model.safeTrim(v.filter) !== ""
+      })
+    }
+    var validDefaultViews = ["today", "inbox", "all"].concat(root.customViews.map(function(v) { return v.name }))
+    root.defaultView = typeof parsed.defaultView === "string" && validDefaultViews.indexOf(parsed.defaultView) !== -1
+      ? parsed.defaultView : "today"
+    // Always starts on the configured default on a fresh load (shell
+    // restart) rather than resuming whatever tab was last open — switching
+    // tabs during a running session intentionally never changes this.
+    root.quickView = root.defaultView
     if (typeof parsed.keybind === "string") root.keybindCombo = parsed.keybind
     if (typeof parsed.panelWidth === "number") root.panelWidth = Math.max(260, Math.min(700, parsed.panelWidth))
     if (typeof parsed.panelHeight === "number") root.panelHeight = Math.max(240, Math.min(800, parsed.panelHeight))
@@ -273,8 +290,8 @@ Panel {
   function persistSettings() {
     settingsFile.setText(JSON.stringify({
       apiToken: root.apiToken,
-      filter: root.filterQuery,
-      quickView: root.quickView,
+      customViews: root.customViews,
+      defaultView: root.defaultView,
       keybind: root.keybindCombo,
       panelWidth: root.panelWidth,
       panelHeight: root.panelHeight,
@@ -307,14 +324,38 @@ Panel {
     persistSettings()
   }
 
-  function applyFilter(value) {
-    var next = Model.sanitizeFilter(value)
-    filterField.text = next
-    root.quickView = "custom"
-    if (next === root.filterQuery) { persistSettings(); refresh(); return }
-    root.filterQuery = next
+  // ---- Custom views (Settings → Custom Views). Named filters shown as
+  //      extra tabs alongside Today/Inbox/All.
+  function addCustomView(name, filterText) {
+    var trimmedName = Model.safeTrim(name)
+    var trimmedFilter = Model.safeTrim(filterText)
+    if (trimmedName === "" || trimmedFilter === "") return
+    if (["today", "inbox", "all"].indexOf(trimmedName.toLowerCase()) !== -1) {
+      root.errorText = "\"" + trimmedName + "\" is a reserved view name."
+      return
+    }
+    // Adding under a name that already exists replaces its filter rather
+    // than creating a duplicate tab.
+    var next = root.customViews.filter(function(v) { return v.name.toLowerCase() !== trimmedName.toLowerCase() })
+    next.push({ name: trimmedName, filter: trimmedFilter })
+    root.customViews = next
+    root.errorText = ""
+    newViewNameField.text = ""
+    newViewFilterField.text = ""
     persistSettings()
-    refresh()
+  }
+
+  function removeCustomView(name) {
+    root.customViews = root.customViews.filter(function(v) { return v.name !== name })
+    if (root.quickView === name) { root.quickView = "today"; root.refresh() }
+    if (root.defaultView === name) root.defaultView = "today"
+    persistSettings()
+  }
+
+  function setDefaultView(view) {
+    if (view === root.defaultView) return
+    root.defaultView = view
+    persistSettings()
   }
 
   // ---- Popup size (Settings → Advanced).
@@ -349,7 +390,15 @@ Panel {
   function settingsFocusChain() {
     var chain = [tokenField, saveTokenButton]
     if (root.apiToken !== "") chain.push(removeTokenButton)
-    chain.push(filterField, filterApplyButton)
+    for (var ci = 0; ci < root.customViews.length; ci++) {
+      var removeItem = customViewsRepeater.itemAt(ci)
+      if (removeItem) chain.push(removeItem)
+    }
+    chain.push(newViewNameField, newViewFilterField, addViewButton)
+    for (var di = 0; di < root.quickViewOrder.length; di++) {
+      var defaultItem = defaultViewRepeater.itemAt(di)
+      if (defaultItem) chain.push(defaultItem)
+    }
     chain.push(barCountHideButton, barCountTodayButton, barCountInboxButton, barCountAllButton)
     if (root.recordingKeybind) {
       chain.push(applyKeybindButton, cancelKeybindButton)
@@ -413,8 +462,8 @@ Panel {
   }
 
   // ---- Quick views. "today"/"inbox" hit /tasks/filter with a canned query;
-  //      "all" hits plain /tasks (no filter = every active task); "custom"
-  //      reuses whatever filter the Settings field last applied.
+  //      "all" hits plain /tasks (no filter = every active task); anything
+  //      else is a customViews name, using that entry's own filter.
   function selectQuickView(view) {
     if (view === root.quickView) return
     root.quickView = view
@@ -424,7 +473,7 @@ Panel {
     refresh()
   }
 
-  readonly property var quickViewOrder: ["today", "inbox", "all"]
+  readonly property var quickViewOrder: ["today", "inbox", "all"].concat(root.customViews.map(function(v) { return v.name }))
 
   function cycleQuickView(direction) {
     var idx = root.quickViewOrder.indexOf(root.quickView)
@@ -565,9 +614,12 @@ Panel {
   // bar badge's independent count) — same three endpoints either way.
   function urlForView(view) {
     if (view === "all") return root.apiBase + "/tasks"
-    var query = view === "inbox" ? "#Inbox"
-      : view === "custom" ? root.filterQuery
-      : "today | overdue"
+    if (view === "inbox") return root.apiBase + "/tasks/filter?query=" + encodeURIComponent("#Inbox") + "&lang=en"
+    if (view === "today") return root.apiBase + "/tasks/filter?query=" + encodeURIComponent("today | overdue") + "&lang=en"
+    // Anything else is a customViews name — falls back to Today/overdue if
+    // the view was deleted out from under a still-selected tab.
+    var matches = root.customViews.filter(function(v) { return v.name === view })
+    var query = matches.length > 0 ? matches[0].filter : "today | overdue"
     return root.apiBase + "/tasks/filter?query=" + encodeURIComponent(query) + "&lang=en"
   }
 
@@ -1071,7 +1123,7 @@ Panel {
   //      mechanism only intercepts for whichever item currently holds
   //      activeFocus — normally keyCatcher itself, never a focused
   //      descendant). Each control has to catch Tab/Backtab itself, same as
-  //      tokenField/filterField already do, so this wraps that once instead
+  //      tokenField/newViewNameField already do, so this wraps that once instead
   //      of repeating it on every button.
   component NavButton: Button {
     focusable: true
@@ -1252,7 +1304,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       clip: true
-      blocked: tokenField.activeFocus || filterField.activeFocus || quickAddField.activeFocus || root.recordingKeybind || confirmDialog.opened || root.editingTaskIndex !== -1 || root.helpOpen
+      blocked: tokenField.activeFocus || newViewNameField.activeFocus || newViewFilterField.activeFocus || quickAddField.activeFocus || root.recordingKeybind || confirmDialog.opened || root.editingTaskIndex !== -1 || root.helpOpen
       // First Escape backs out of Settings to the task list; a second one
       // (now that settingsView is false) closes the panel.
       onCloseRequested: {
@@ -1537,15 +1589,53 @@ Panel {
             }
 
             PanelSectionHeader {
-              text: "DEFAULT FILTER"
+              text: "CUSTOM VIEWS"
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
             }
 
             Text {
               width: parent.width
-              text: "Todoist filter syntax (e.g. \"today | overdue\", \"#Work & !subtask\") — applied as the \"custom\" view."
+              text: "Named Todoist filters (e.g. \"#Arch\", \"#Work & !subtask\") shown as extra tabs next to Today/Inbox/All. Tap one below to remove it."
               wrapMode: Text.WordWrap
+              color: Qt.darker(root.contentForeground, 1.3)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.xs
+              visible: root.customViews.length > 0
+
+              Repeater {
+                id: customViewsRepeater
+                model: root.customViews
+
+                NavButton {
+                  required property var modelData
+                  width: parent.width
+                  text: modelData.name + " — " + modelData.filter + "  (tap to remove)"
+                  onClicked: root.removeCustomView(modelData.name)
+                }
+              }
+            }
+
+            TextField {
+              id: newViewNameField
+              width: parent.width
+              activeFocusOnTab: false
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Tab) { root.moveSettingsFocus(1); event.accepted = true }
+                else if (event.key === Qt.Key_Backtab) { root.moveSettingsFocus(-1); event.accepted = true }
+              }
+              Keys.onEscapePressed: root.settingsView = false
+              onAccepted: newViewFilterField.forceActiveFocus()
+            }
+
+            Text {
+              width: parent.width
+              text: "View name, then its filter below"
               color: Qt.darker(root.contentForeground, 1.3)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.bodySmall
@@ -1556,22 +1646,59 @@ Panel {
               spacing: Style.spacing.sm
 
               TextField {
-                id: filterField
-                width: parent.width - filterApplyButton.width - Style.spacing.sm
+                id: newViewFilterField
+                width: parent.width - addViewButton.width - Style.spacing.sm
                 activeFocusOnTab: false
-                text: root.filterQuery
-                onAccepted: root.applyFilter(text)
                 Keys.onPressed: function(event) {
                   if (event.key === Qt.Key_Tab) { root.moveSettingsFocus(1); event.accepted = true }
                   else if (event.key === Qt.Key_Backtab) { root.moveSettingsFocus(-1); event.accepted = true }
                 }
                 Keys.onEscapePressed: root.settingsView = false
+                onAccepted: root.addCustomView(newViewNameField.text, text)
               }
 
               NavButton {
-                id: filterApplyButton
-                text: "Apply"
-                onClicked: root.applyFilter(filterField.text)
+                id: addViewButton
+                text: "Add view"
+                enabled: Model.safeTrim(newViewNameField.text) !== "" && Model.safeTrim(newViewFilterField.text) !== ""
+                onClicked: root.addCustomView(newViewNameField.text, newViewFilterField.text)
+              }
+            }
+
+            PanelSeparator {
+              foreground: root.contentForeground
+            }
+
+            PanelSectionHeader {
+              text: "DEFAULT VIEW"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: "Which tab opens automatically whenever the shell restarts."
+              wrapMode: Text.WordWrap
+              color: Qt.darker(root.contentForeground, 1.3)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.xs
+
+              Repeater {
+                id: defaultViewRepeater
+                model: root.quickViewOrder
+
+                NavButton {
+                  required property string modelData
+                  width: parent.width
+                  text: modelData === "today" ? "Today" : modelData === "inbox" ? "Inbox" : modelData === "all" ? "All" : modelData
+                  selected: root.defaultView === modelData
+                  onClicked: root.setDefaultView(modelData)
+                }
               }
             }
 
@@ -2005,8 +2132,8 @@ Panel {
               focusable: false
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
-              options: ["today", "inbox", "all"].map(function(v) {
-                return { value: v, label: v === "today" ? "Today" : v === "inbox" ? "Inbox" : "All" }
+              options: root.quickViewOrder.map(function(v) {
+                return { value: v, label: v === "today" ? "Today" : v === "inbox" ? "Inbox" : v === "all" ? "All" : v }
               })
               value: root.quickView
               onChanged: function(v) { root.selectQuickView(v) }
@@ -2205,7 +2332,7 @@ Panel {
                     color: root.contentForeground
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.bodySmall
-                    text: "Tab / Shift+Tab — cycle Today → Inbox → All\n"
+                    text: "Tab / Shift+Tab — cycle through the view tabs\n"
                       + "t / i / a — jump to Today / Inbox / All\n"
                       + "p — toggle Settings\n"
                       + "↑/↓ or k/j — move task selection\n"
