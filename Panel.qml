@@ -87,6 +87,12 @@ Panel {
   property bool suppressNextActivate: false
 
   property bool helpOpen: false
+  // The overlay's own key-catching Item takes active focus while open (see
+  // its Keys.onEscapePressed/onPressed below) and nothing hands it back —
+  // every other dismissable overlay in this file does that explicitly on
+  // close, so do the same here regardless of which of the four ways
+  // (Escape, background click, "?" again, header button) closed it.
+  onHelpOpenChanged: if (!helpOpen) Qt.callLater(function() { keyCatcher.forceActiveFocus() })
 
   // Fixed popup size, user-adjustable from Settings → Advanced. Deliberately
   // NOT derived from content (mainColumn.implicitHeight) — letting the
@@ -532,10 +538,12 @@ Panel {
     confirmDialog.opened = false
     root.pendingDeleteTaskId = ""
     root.pendingDeleteTaskContent = ""
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function confirmDeleteTask() {
     confirmDialog.opened = false
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     var taskId = root.pendingDeleteTaskId
     root.pendingDeleteTaskId = ""
     root.pendingDeleteTaskContent = ""
