@@ -39,6 +39,16 @@ Panel {
   property bool showTaskMeta: true
   property bool showHeaderQuips: true
   property var projectsById: ({})
+  // Lets a subtask's meta line show its parent chain (see TaskRow.metaLabel)
+  // without a separate fetch — best-effort: an ancestor outside the
+  // currently-loaded view's own task list just won't resolve.
+  readonly property var tasksById: {
+    var m = {}
+    for (var i = 0; i < root.tasks.length; i++) {
+      if (root.tasks[i] && root.tasks[i].id) m[root.tasks[i].id] = root.tasks[i]
+    }
+    return m
+  }
   // "today" | "inbox" | "all" | the name of a customViews entry.
   property string quickView: "today"
   property bool settingsLoaded: false
@@ -1173,7 +1183,7 @@ Panel {
     readonly property bool overdue: Model.taskIsOverdue(task)
     readonly property string dueLabel: Model.taskDueLabel(task)
     readonly property string metaLabel: root.showTaskMeta && task
-      ? Model.taskMetaLabel(task, root.projectsById[task.project_id]) : ""
+      ? Model.taskMetaLabel(task, root.projectsById[task.project_id], Model.parentChainLabel(task, root.tasksById)) : ""
     readonly property bool completing: task ? root.completingTaskIds.indexOf(task.id) !== -1 : false
     readonly property bool editing: root.editingTaskIndex === rowIndex
     // Todoist priority colors (API priority 4 = p1, the most urgent, down
