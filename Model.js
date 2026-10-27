@@ -38,6 +38,39 @@ function taskDueLabel(task) {
   return task.due.string || isoDatePrefix(task.due.date)
 }
 
+// Todoist stores Markdown links as "[title](url)"; the panel shows only the
+// title. The URL may itself contain one level of parentheses. A link with an
+// empty title falls back to its URL.
+var MARKDOWN_LINK = /\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))*)\)/g
+
+function displayContent(content) {
+  return String(content || "").replace(MARKDOWN_LINK, function(match, title, url) {
+    return title !== "" ? title : url
+  })
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\n/g, "<br>")
+}
+
+// Same as displayContent(), as Text.StyledText markup: each link becomes an
+// <a href> anchor (StyledText reads href verbatim, so only quotes are
+// percent-encoded) and everything else is HTML-escaped.
+function richContent(content) {
+  var source = String(content || "")
+  var html = ""
+  var last = 0
+  MARKDOWN_LINK.lastIndex = 0
+  var match
+  while ((match = MARKDOWN_LINK.exec(source)) !== null) {
+    html += escapeHtml(source.substring(last, match.index))
+    html += '<a href="' + match[2].replace(/"/g, "%22") + '">' + escapeHtml(match[1] !== "" ? match[1] : match[2]) + "</a>"
+    last = MARKDOWN_LINK.lastIndex
+  }
+  return html + escapeHtml(source.substring(last))
+}
+
 // Walks a subtask's parent_id chain as far as tasksById can resolve it,
 // oldest ancestor first (e.g. "Grandparent › Parent"). tasksById only ever
 // holds whatever's currently loaded for the active view, so a chain that
@@ -52,7 +85,7 @@ function parentChainLabel(task, tasksById) {
   while (current && current.parent_id && guard < 8) {
     var parent = (tasksById || {})[current.parent_id]
     if (!parent) { names.unshift("…"); break }
-    names.unshift(parent.content || "")
+    names.unshift(displayContent(parent.content))
     current = parent
     guard++
   }

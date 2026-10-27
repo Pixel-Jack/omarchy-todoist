@@ -1333,10 +1333,17 @@ Panel {
         visible: !row.editing
         height: visible ? implicitHeight : 0
         width: parent.width
-        text: row.task ? row.task.content : ""
+        text: row.task ? Model.richContent(row.task.content) : ""
+        textFormat: Text.StyledText
         opacity: row.completing ? 0.5 : 1.0
         font.strikeout: row.completing
         color: row.textColor
+        linkColor: row.textColor
+        onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+
+        HoverHandler {
+          cursorShape: parent.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+        }
         wrapMode: Text.WordWrap
         font.family: root.contentFontFamily
         font.pixelSize: Style.font.body
@@ -2254,7 +2261,9 @@ Panel {
             ListView {
               id: taskListView
               width: parent.width
-              height: Math.min(contentHeight, Style.space(320))
+              // Fill whatever the fixed-height panel leaves below the header,
+              // quick-add and view chips; only empty-state text follows the list.
+              height: Math.min(contentHeight, Math.max(Style.space(160), scroll.height - taskColumn.y - y))
               spacing: Style.spacing.sm
               clip: true
               boundsBehavior: Flickable.StopAtBounds
@@ -2342,7 +2351,7 @@ Panel {
       ConfirmDialog {
         id: confirmDialog
         anchors.fill: parent
-        message: "Delete \"" + root.pendingDeleteTaskContent + "\"?"
+        message: "Delete \"" + Model.displayContent(root.pendingDeleteTaskContent) + "\"?"
         confirmText: "Delete"
         background: Color.popups.background
         foreground: root.contentForeground
